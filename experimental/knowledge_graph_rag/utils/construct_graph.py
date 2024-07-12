@@ -11,6 +11,8 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import SystemMessage, HumanMessage
 import networkx as nx
 import pandas as pd
+import ijson
+import argparse
 from pyvis.network import Network
 
 
@@ -48,15 +50,65 @@ def save_checkpoint(triples: List[Dict[str, str]], processed_files: List[str], c
     print(f"Checkpoint saved: {checkpoint_file}")
 
 
-def load_checkpoint(checkpoint_file: str) -> Tuple[List[Dict[str, str]], List[str]]:
-    """Load the checkpoint from a single JSON file."""
+def load_checkpoint(checkpoint_file: str):
+    """Load the checkpoint from a single JSON file with error handling for large files."""
     if not os.path.exists(checkpoint_file):
         print("No existing checkpoint found. Starting from scratch.")
         return [], []
     print(f"Loading checkpoint: {checkpoint_file}")
-    with open(checkpoint_file, 'r') as f:
-        data = json.load(f)
-    return data.get("triples", []), data.get("processed_files", [])
+    
+    triples = []
+    processed_files = []
+    
+    try:
+        with open(checkpoint_file, 'r') as f:
+            parser = ijson.parse(f)
+            current_array = None
+            current_value = []
+            
+            for prefix, event, value in parser:
+                if event == 'start_array':
+                    if prefix == 'triples':
+                        current_array = 'triples'
+                    elif prefix == 'processed_files':
+                        current_array = 'processed_files'
+                    current_value = []
+                elif event == 'end_array':
+                    if current_array == 'triples':
+                        triples.extend(current_value)
+                    elif current_array == 'processed_files':
+                        processed_files.extend(current_value)
+                    current_array = None
+                elif event == 'string':
+                    if current_array == 'triples':
+                        current_value.append(value)
+                    elif current_array == 'processed_files':
+                        current_value.append(value)
+        
+        print(f"Successfully loaded {len(triples)} triples and {len(processed_files)} processed files.")
+        return triples, processed_files
+    
+    except ijson.JSONError as e:
+        print(f"Error parsing JSON in checkpoint file: {e}")
+        print("Attempting to recover partial data...")
+        
+        # Try to recover partial data
+        try:
+            with open(checkpoint_file, 'r') as f:
+                content = f.read()
+            
+            partial_data = json.loads(content[:content.rindex(']')] + ']}}')
+            triples = partial_data.get("triples", [])
+            processed_files = partial_data.get("processed_files", [])
+            print(f"Recovered {len(triples)} triples and {len(processed_files)} processed files.")
+            return triples, processed_files
+        except:
+            print("Unable to recover partial data. Starting from scratch.")
+            return [], []
+    
+    except Exception as e:
+        print(f"Unexpected error loading checkpoint: {str(e)}")
+        return [], []
 
 
 def process_document(doc: str, file_path: str, repo_structure: Dict[str, Any], llm: Any) -> List[Dict[str, str]]:
@@ -271,6 +323,7 @@ def generate_graphml_from_checkpoint(checkpoint_file: str, repo_path: str, outpu
     print("Detailed triple information:")
     triple_types = {}
     for i, triple in enumerate(triples):
+        print(f"Triple {i}: {triple}")
         triple_type = type(triple).__name__
         triple_types[triple_type] = triple_types.get(triple_type, 0) + 1
         if i < 10:  # Print details for first 10 triples
@@ -340,35 +393,49 @@ def save_graph_data(G: nx.DiGraph, output_dir: str) -> None:
     nx.write_graphml(G, os.path.join(output_dir, 'av_test_knowledge_graph.graphml'))
 
 
-def main():
+def main(args):
     # Set up the NVIDIA AI Endpoints LLM
     llm = ChatNVIDIA(model="mistralai/mixtral-8x7b-instruct-v0.1")  
     
-    repo_path = "/home/april/av-llm/GenerativeAIExamples/experimental/knowledge_graph_rag/ndas-refs_heads_main-tests/behaviorplanner"
-    output_dir = "/home/april/av-llm/GenerativeAIExamples/experimental/knowledge_graph_rag" 
-    checkpoint_file = os.path.join(output_dir, "pacsim_checkpoint.json")
+    repo_path = args.repo_path
+    output_dir = args.output_dir
+    checkpoint_file = os.path.join(output_dir, args.checkpoint_file)
     
-    # Generate GraphML from checkpoint
-    # generate_graphml_from_checkpoint(checkpoint_file, repo_path, output_dir)
-
-    # If you want to process documents and create a new checkpoint, uncomment the following lines:
-    repo_structure = get_repo_structure(repo_path)
-    print("Repository Structure:")
-    print_repo_structure(repo_structure)
-    triples = process_documents(repo_path, repo_structure, llm, checkpoint_file)
-    print(f"Total triples extracted: {len(triples)}")
-    
-    if triples:
-        G = create_knowledge_graph(triples, repo_structure)
-        graphml_file = os.path.join(output_dir, "knowledge_graph.graphml")
-        nx.write_graphml(G, graphml_file)
-        print(f"GraphML saved to {graphml_file}")
+    if args.extract_triples:
+        # Process documents and create a new checkpoint
+        repo_structure = get_repo_structure(repo_path)
+        print("Repository Structure:")
+        print_repo_structure(repo_structure)
+        triples = process_documents(repo_path, repo_structure, llm, checkpoint_file)
+        print(f"Total triples extracted: {len(triples)}")
         
-        html_file = os.path.join(output_dir, "knowledge_graph.html")
-        visualize_graph(G, html_file)
-    else:
-        print("No triples extracted. Cannot create knowledge graph.")
-
+        if triples:
+            G = create_knowledge_graph(triples, repo_structure)
+            graphml_file = os.path.join(output_dir, "knowledge_graph.graphml")
+            nx.write_graphml(G, graphml_file)
+            print(f"GraphML saved to {graphml_file}")
+            
+            html_file = os.path.join(output_dir, "knowledge_graph.html")
+            visualize_graph(G, html_file)
+        else:
+            print("No triples extracted. Cannot create knowledge graph.")
     
+    elif args.generate_graph:
+        # Generate GraphML from checkpoint
+        generate_graphml_from_checkpoint(checkpoint_file, repo_path, output_dir)
+    
+    else:
+        print("No action specified. Use --extract-triples or --generate-graph.")
+
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Knowledge Graph Generation for AV Testing")
+    parser.add_argument("--repo-path", type=str, default="/home/april/av-llm/GenerativeAIExamples/experimental/knowledge_graph_rag/ndas-refs_heads_main-tests/behaviorplanner", help="Path to the repository")
+    parser.add_argument("--output-dir", type=str, default="/home/april/av-llm/GenerativeAIExamples/experimental/knowledge_graph_rag", help="Output directory for generated files")
+    parser.add_argument("--checkpoint-file", type=str, default="pacsim_checkpoint.json", help="Name of the checkpoint file")
+    parser.add_argument("--extract-triples", action="store_true", help="Extract triples from documents")
+    parser.add_argument("--generate-graph", action="store_true", help="Generate graph from checkpoint")
+    
+    args = parser.parse_args()
+    
+    main(args)
+
