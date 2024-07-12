@@ -66,10 +66,10 @@ def app():
 
     if st.button("Process Documents"):
         # Check if the selected directory has PDF files
-        res = has_pdf_files(directory)
-        if not res:
-            st.error("No PDF files found in directory! Only PDF files and text extraction are supported for now.")
-            st.stop()
+        # res = has_pdf_files(directory)
+        # if not res:
+        #     st.error("No PDF files found in directory! Only PDF files and text extraction are supported for now.")
+        #     st.stop()
         documents, results = process_documents(directory, llm)
         print(documents)
         st.write(documents)

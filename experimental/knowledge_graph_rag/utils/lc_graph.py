@@ -13,11 +13,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
 from langchain_nvidia_ai_endpoints import ChatNVIDIA
 import concurrent.futures
-from preprocessor import extract_triples
+from utils.preprocessor import extract_triples
 from tqdm import tqdm
-from langchain_community.document_loaders import DirectoryLoader
+from langchain_community.document_loaders import DirectoryLoader, TextLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 import multiprocessing
 import csv
@@ -33,11 +34,20 @@ def process_document(doc, llm):
 
 def process_documents(directory, llm, triplets=True, chunk_size=500, chunk_overlap=100):    
     with st.spinner("Loading and splitting documents"):
-        loader = DirectoryLoader(directory)
-        raw_docs = loader.load()
+        # Load .txt files
+        txt_loader = DirectoryLoader(directory, glob="**/*.txt", loader_cls=TextLoader, loader_kwargs={'encoding': 'utf-8'})
+        txt_docs = txt_loader.load()
+
+        # Load .py files
+        py_loader = DirectoryLoader(directory, glob="**/*.py", loader_cls=TextLoader, loader_kwargs={'encoding': 'utf-8'})
+        py_docs = py_loader.load()
+
+        # Combine all documents
+        raw_docs = txt_docs + py_docs
+
         text_splitter = RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
         documents = text_splitter.split_documents(raw_docs)
-        st.write("Loaded docs, len(docs): " + str(len(documents)))
+        st.write(f"Loaded docs, len(docs): {len(documents)}")
 
     if not triplets:
         return documents, []
